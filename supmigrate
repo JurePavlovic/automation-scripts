@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+set -u
+IFS=$'\n\t'
+
+reset=false
+
+while getopts ":r" opt; do
+  case $opt in
+    r) reset=true ;;
+    *) echo "Usage: supmigrate [-r] <migration-name>" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ $# -lt 1 ]; then
+  echo "Usage: supmigrate [-r] <migration-name>" >&2
+  exit 1
+fi
+
+migration_name="$1"
+
+if ! command -v supabase >/dev/null 2>&1; then
+  echo "supabase CLI not found in PATH" >&2
+  exit 1
+fi
+
+if [ ! -f "supabase/config.toml" ]; then
+  echo "supabase/config.toml not found in current directory; run this from a Supabase project root." >&2
+  exit 1
+fi
+
+# Stop any running Supabase instance (even from another project)
+running_container=$(docker ps --filter name=supabase_db_ --format '{{.Names}}' 2>/dev/null | head -n1)
+if [ -n "$running_container" ]; then
+  project_id=$(printf '%s\n' "$running_container" | sed 's/supabase_db_//')
+  echo "Stopping Supabase (project: $project_id)..."
+  supabase stop --project-id "$project_id"
+fi
+
+echo "Generating migration: $migration_name"
+supabase db diff -f "$migration_name"
+diff_status=$?
+
+if [ "$diff_status" -ne 0 ]; then
+  echo "supabase db diff failed (exit $diff_status)" >&2
+  echo "Starting Supabase back up..."
+  supabase start
+  exit "$diff_status"
+fi
+
+echo "Starting Supabase..."
+supabase start
+
+if [ "$reset" = true ]; then
+  echo "Resetting database..."
+  supabase db reset
+fi
